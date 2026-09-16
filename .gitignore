@@ -1,0 +1,6 @@
+shared/
+send-folder/
+folder-config.json
+.DS_Store
+node_modules/
+*.log

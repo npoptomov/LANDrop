@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LAN Drop</title><link rel="icon" href="/favicon.svg">
+<style>
+:root{color-scheme:dark;font:15px system-ui,sans-serif;color:#e8edf5;background:#10141b}*{box-sizing:border-box}body{margin:0}main{max-width:800px;margin:auto;padding:32px 20px}header,.heading,.actions{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:24px;letter-spacing:-.7px;margin:0}h2{font-size:17px;margin:0}p{color:#9ba9bb;line-height:1.5}.connection{font-size:12px;color:#9ba9bb}.phone{font-size:13px;margin:12px 0 28px;overflow-wrap:anywhere}a{color:#86c9ff}section{background:#181e28;border:1px solid #2a3443;border-radius:16px;padding:22px;margin:18px 0}button,.download{font:inherit;font-size:13px;font-weight:600;border:1px solid #354154;border-radius:8px;padding:10px 14px;background:#242e3c;color:#edf4ff;cursor:pointer;text-decoration:none;white-space:nowrap}button:hover,.download:hover{background:#303e50}button:disabled{opacity:.45;cursor:default}button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #86c9ff;outline-offset:4px}.primary{background:#b0e5d2;color:#112c23;border-color:transparent}.primary:hover{background:#cff5e7}.drop{width:100%;display:flex;align-items:center;justify-content:center;gap:16px;min-height:116px;margin-top:18px;border:1px dashed #4d6179;background:#131a24;font-size:15px}.drop svg{width:26px;height:26px;color:#b0e5d2}.drop.dragging{border-color:#b0e5d2;background:#20392f}.muted{color:#9ba9bb;font-size:12px;margin:10px 0 0}.path{overflow-wrap:anywhere}.list{margin-top:14px}.row{display:flex;gap:12px;align-items:center;padding:14px 0;border-top:1px solid #2a3443}.row:first-child{border-top:0}.details{flex:1;min-width:0}.name{display:block;overflow-wrap:anywhere;font-size:14px}.size{display:block;font-size:12px;color:#9ba9bb;margin-top:4px}.row input{width:18px;height:18px;accent-color:#b0e5d2;flex-shrink:0}.empty{font-size:13px;color:#9ba9bb;padding:12px 0}.actions{justify-content:flex-end;margin-top:12px}.status{min-height:18px;font-size:13px;color:#b0e5d2;overflow-wrap:anywhere}#sharedList{max-height:420px;overflow:auto}[hidden]{display:none!important}@media(max-width:480px){main{padding:24px 14px}section{padding:17px}.download{padding:9px 10px}.drop{font-size:14px}.row{gap:9px}}
+</style>
+</head>
+<body><main>
+<header><h1>LAN Drop</h1><span class="connection" id="connection" role="status">Connecting…</span></header>
+<p class="phone">On your phone: <a id="phoneLink"></a></p>
+<section aria-labelledby="sendTitle">
+<h2 id="sendTitle">Share files</h2>
+<button class="drop" id="dropZone" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg>Drop files here or choose files</button>
+<input id="fileInput" type="file" multiple hidden aria-label="Choose files">
+<p class="muted" id="limit">Up to 25 MB per file · Same Wi-Fi</p>
+<p class="status" id="uploadStatus" role="status"></p>
+<div class="list" id="sharedList"></div>
+</section>
+<section aria-labelledby="folderTitle">
+<div class="heading"><h2 id="folderTitle">Shared folder</h2><button id="refreshFolder" type="button">Refresh</button></div>
+<p class="muted path" id="folderPath"></p>
+<div class="list" id="folderList"></div>
+<div class="actions"><button class="primary" id="shareFolder" type="button" disabled>Share selected</button></div>
+<p class="status" id="folderStatus" role="status"></p>
+</section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let items = [], maxBytes = 25 * 1024 * 1024, sharing = false, folderLoading = false;
+  const sender = /Android|iPhone|iPad/i.test(navigator.userAgent) ? 'Phone' : 'MacBook';
+  const size = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+  async function api(url, options = {}) {
+    if (options.body) { options.headers = {'Content-Type':'application/json'}; options.body = JSON.stringify(options.body); }
+    const response = await fetch(url, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Request failed');
+    return body;
+  }
+  function fileRow(file, href, checkbox) {
+    const row = document.createElement('div'); row.className = 'row';
+    const details = document.createElement(checkbox ? 'label' : 'div'); details.className = 'details';
+    if (checkbox) {
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = file.name;
+      input.id = `folder-${$('folderList').childElementCount}`; details.htmlFor = input.id;
+      input.addEventListener('change', selection); row.append(input);
+    }
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = file.name;
+    const bytes = document.createElement('span'); bytes.className = 'size'; bytes.textContent = size(file.size);
+    details.append(name, bytes);
+    const download = document.createElement('a'); download.className = 'download'; download.href = href; download.download = file.name; download.textContent = 'Download'; download.setAttribute('aria-label', `Download ${file.name}`);
+    row.append(details, download); return row;
+  }
+  function empty(list, text) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = text; list.append(p); }
+  function renderFiles() {
+    $('sharedList').replaceChildren();
+    for (const item of items.filter(i => i.kind === 'file')) $('sharedList').append(fileRow(item, `/download/${encodeURIComponent(item.id)}`, false));
+    if (!$('sharedList').childElementCount) empty($('sharedList'), 'Files you share appear here on both devices.');
+  }
+  function upsert(item) { if (item.kind !== 'file') return; items = [item, ...items.filter(i => i.id !== item.id)].slice(0,500); renderFiles(); }
+  function selection() {
+    const n = $('folderList').querySelectorAll('input:checked').length;
+    $('shareFolder').disabled = sharing || !n;
+    $('shareFolder').textContent = sharing ? 'Sharing…' : n ? `Share selected (${n})` : 'Share selected';
+  }
+  async function loadFolder() {
+    if (folderLoading || sharing) return;
+    folderLoading = true; $('refreshFolder').disabled = true;
+    try {
+      const result = await api('/api/folder');
+      const selected = new Set(Array.from($('folderList').querySelectorAll('input:checked'), i => i.value));
+      $('folderPath').textContent = result.folder; $('folderList').replaceChildren();
+      for (const file of result.files) {
+        const row = fileRow(file, `/api/folder/download?name=${encodeURIComponent(file.name)}`, true);
+        row.querySelector('input').checked = selected.has(file.name); $('folderList').append(row);
+      }
+      if (!result.files.length) empty($('folderList'), 'This folder is empty. Add files on your Mac, then refresh.');
+      $('folderStatus').textContent = ''; selection();
+    } catch { $('folderStatus').textContent = 'Could not load the folder. Try Refresh.'; }
+    finally { folderLoading = false; $('refreshFolder').disabled = false; }
+  }
+  $('refreshFolder').addEventListener('click', loadFolder);
+  $('shareFolder').addEventListener('click', async () => {
+    const names = Array.from($('folderList').querySelectorAll('input:checked'), i => i.value);
+    sharing = true; selection(); $('refreshFolder').disabled = true;
+    try {
+      const result = await api('/api/folder/share', {method:'POST', body:{names,sender}});
+      result.items.forEach(upsert);
+      for (const input of $('folderList').querySelectorAll('input:checked')) if (!result.failed.includes(input.value)) input.checked = false;
+      $('folderStatus').textContent = `${result.items.length} shared.` + (result.failed.length ? ` Could not share: ${result.failed.join(', ')}` : '');
+    } catch { $('folderStatus').textContent = 'Could not share files. Try again.'; }
+    finally { sharing = false; selection(); $('refreshFolder').disabled = false; }
+  });
+  function readBase64(file) {
+    return new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+  }
+  let queue = Promise.resolve();
+  function queueFiles(files) {
+    for (const file of Array.from(files || [])) queue = queue.then(async () => {
+      if (file.size > maxBytes) { $('uploadStatus').textContent = `${file.name} exceeds ${size(maxBytes)}.`; return; }
+      $('uploadStatus').textContent = `Sharing ${file.name}…`;
+      try { const result = await api('/api/upload', {method:'POST', body:{name:file.name,mime:file.type,data:await readBase64(file),sender}}); upsert(result.item); $('uploadStatus').textContent = `Shared ${file.name}`; }
+      catch { $('uploadStatus').textContent = `Could not share ${file.name}. Try again.`; }
+    });
+  }
+  $('dropZone').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', () => { queueFiles($('fileInput').files); $('fileInput').value = ''; });
+  document.addEventListener('dragover', event => { if (!Array.from(event.dataTransfer.types).includes('Files')) return; event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; $('dropZone').classList.add('dragging'); });
+  document.addEventListener('dragleave', event => { if (!event.relatedTarget) $('dropZone').classList.remove('dragging'); });
+  document.addEventListener('drop', event => { event.preventDefault(); $('dropZone').classList.remove('dragging'); queueFiles(event.dataTransfer.files); });
+  let source;
+  async function boot() {
+    try {
+      const config = await api('/api/config'); maxBytes = config.maxFileBytes;
+      const url = config.shareUrls[0]; $('phoneLink').textContent = url || 'Connect your Mac to Wi-Fi'; if (url) $('phoneLink').href = url;
+      $('limit').textContent = `Up to ${size(maxBytes)} per file · Same Wi-Fi`;
+      items = (await api('/api/items')).items; renderFiles(); await loadFolder();
+      if (source) source.close(); source = new EventSource('/events');
+      source.onopen = () => $('connection').textContent = 'Connected';
+      source.onerror = () => $('connection').textContent = 'Reconnecting…';
+      source.onmessage = event => { const data = JSON.parse(event.data); if (data.type === 'snapshot') {items = data.items; renderFiles();} else if (data.type === 'item') upsert(data.item); };
+    } catch { $('connection').textContent = 'Reconnecting…'; setTimeout(boot,2500); }
+  }
+  window.addEventListener('focus', loadFolder);
+  boot();
+})();
+</script></body></html>
